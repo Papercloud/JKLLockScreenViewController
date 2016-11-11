@@ -22,8 +22,6 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
 
 @property (nonatomic, weak) IBOutlet UILabel  * titleLabel;
 @property (nonatomic, weak) IBOutlet UILabel  * subtitleLabel;
-@property (nonatomic, weak) IBOutlet UIButton * cancelButton;
-@property (weak, nonatomic) IBOutlet UIButton * deleteButton;
 @property (strong, nonatomic) IBOutletCollection(JKLLockScreenNumber) NSArray *numberButtons;
 
 @property (nonatomic, weak) IBOutlet JKLLockScreenPincodeView * pincodeView;
@@ -37,22 +35,19 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
     [super viewDidLoad];
     
     switch (_lockScreenMode) {
-        case LockScreenModeVerification:
-        case LockScreenModeNormal: {
-            // [일반 모드] Cancel 버튼 감춤
-            [_cancelButton setHidden:YES];
-        }
         case LockScreenModeNew: {
             // [신규 모드]
-            [self lsv_updateTitle:NSLocalizedStringFromTable(@"Pincode Title",    @"JKLockScreen", nil)
-                         subtitle:NSLocalizedStringFromTable(@"Pincode Subtitle", @"JKLockScreen", nil)];
+            [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateNew]];
             
             break;
         }
         case LockScreenModeChange:
             // [변경 모드]
-            [self lsv_updateTitle:NSLocalizedStringFromTable(@"New Pincode Title",    @"JKLockScreen", nil)
-                         subtitle:NSLocalizedStringFromTable(@"New Pincode Subtitle", @"JKLockScreen", nil)];
+            [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateChange]];
+            break;
+            
+        default:
+            [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateNormal]];
             break;
     }
     
@@ -78,6 +73,8 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
  *  @param color tint color for buttons
  */
 - (void)tintSubviewsWithColor: (UIColor *) color{
+    [_titleLabel setTextColor:color];
+    [_subtitleLabel setTextColor:color];
     [_cancelButton setTitleColor:color forState:UIControlStateNormal];
     [_deleteButton setTitleColor:color forState:UIControlStateNormal];
     [_pincodeView setPincodeColor:color];
@@ -85,6 +82,7 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
     for (JKLLockScreenNumber * number in _numberButtons)
     {
         [number setTintColor:color];
+        [number setTitleColor:color forState:UIControlStateNormal];
     }
 }
 
@@ -100,10 +98,13 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
     if ([context canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics error:&error]) {
         // evaluate
         [context evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
-                localizedReason:NSLocalizedStringFromTable(@"Pincode TouchID", @"JKLockScreen", nil)
+                localizedReason:[self.dataSource touchIDReasonDescription]
                           reply:^(BOOL success, NSError * authenticationError) {
                               if (success) {
-                                  [self lsv_unlockDelayDismissViewController:LSVDismissWaitingDuration];
+                                  dispatch_async(dispatch_get_main_queue(), ^{
+                                      [self lsv_unlockDelayDismissViewController:LSVDismissWaitingDuration];
+                                  });
+                                  
                               }
                               else {
                                   NSLog(@"LAContext::Authentication Error : %@", authenticationError);
@@ -192,7 +193,6 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
     CAAnimation * shake = [self lsv_makeShakeAnimation];
     [_pincodeView.layer addAnimation:shake forKey:@"shake"];
     [_pincodeView setEnabled:NO];
-    [_subtitleLabel setText:NSLocalizedStringFromTable(@"Pincode Not Match Title", @"JKLockScreen", nil)];
     
     dispatch_time_t delayInSeconds = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(LSVShakeAnimationDuration * NSEC_PER_SEC));
     dispatch_after(delayInSeconds, dispatch_get_main_queue(), ^(void){
@@ -201,19 +201,21 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
         
         switch (_lockScreenMode) {
             case LockScreenModeNormal:
+                [self.subtitleLabel setText:[self.dataSource subtitleForError:LockScreenErrorInvalid]];
+                break;
             case LockScreenModeNew: {
                 // [신규 모드]
-                [self lsv_updateTitle:NSLocalizedStringFromTable(@"Pincode Title",    @"JKLockScreen", nil)
-                             subtitle:NSLocalizedStringFromTable(@"Pincode Subtitle", @"JKLockScreen", nil)];
-                
+                [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateNew]];
+                [self.subtitleLabel setText:[self.dataSource subtitleForError:LockScreenErrorConfirmCodeDidNotMatch]];
                 break;
             }
             case LockScreenModeChange:
                 // [변경 모드]
-                [self lsv_updateTitle:NSLocalizedStringFromTable(@"New Pincode Title",    @"JKLockScreen", nil)
-                             subtitle:NSLocalizedStringFromTable(@"New Pincode Subtitle", @"JKLockScreen", nil)];
+                [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateChange]];
+                [self.subtitleLabel setText:[self.dataSource subtitleForError:LockScreenErrorConfirmCodeDidNotMatch]];
                 break;
             default:
+                [self.subtitleLabel setText:[self.dataSource subtitleForError:LockScreenErrorInvalid]];
                 break;
         }
     });
@@ -299,6 +301,10 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
 
 - (IBAction)onDeleteClicked:(id)sender {
     
+    if ([_delegate respondsToSelector:@selector(unlockWasCancelledLockScreenViewController:)]) {
+        [_delegate unlockWasDeletedLockScreenViewController:self];
+    }
+    
     [_pincodeView removeLastPincode];
 }
 
@@ -332,15 +338,14 @@ static const NSTimeInterval LSVShakeAnimationDuration = 0.5f;
         [self setLockScreenMode:LockScreenModeVerification];
         
         // 재입력 타이틀로 전환
-        [self lsv_updateTitle:NSLocalizedStringFromTable(@"Pincode Title Confirm",    @"JKLockScreen", nil)
-                     subtitle:NSLocalizedStringFromTable(@"Pincode Subtitle Confirm", @"JKLockScreen", nil)];
+        [self.titleLabel setText:[self.dataSource titleForState:LockScreenStateConfirm]];
         
         // 서브타이틀과 pincodeviw 이동 애니메이션
         [self lsv_swipeSubtitleAndPincodeView];
     }
 }
 
-#pragma mark - 
+#pragma mark -
 #pragma mark LockScreenViewController Orientation
 - (BOOL)shouldAutorotate {
     return YES;
